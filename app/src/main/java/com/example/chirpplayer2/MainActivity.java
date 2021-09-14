@@ -5,6 +5,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import android.annotation.TargetApi;
+import android.database.Cursor;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
@@ -17,24 +18,28 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.chibde.visualizer.LineVisualizer;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
 
     int duration=10;
     int sampleRate=44100;
     int numSample=duration*sampleRate;
-    double sample[]=new double[numSample];
+    double[] sample =new double[numSample];
     double freq1=20;
     double freq2=1900;
     byte[] generatedSnd= new byte[2*numSample];
     Handler handler = new Handler();
     AudioTrack audioTrack;
     LineVisualizer lineVisualizer;
+
+    DatabaseHelper myDatabase;
 
     @Override
     @TargetApi(Build.VERSION_CODES.M)
@@ -46,15 +51,19 @@ public class MainActivity extends AppCompatActivity {
         Button bGenerate = findViewById(R.id.generate);
         Button pitchIncreaseButton = findViewById(R.id.increase);
         Button pitchDecreaseButton = findViewById(R.id.decrease);
+        Button savePitchButton = findViewById(R.id.savePitch);
+
         lineVisualizer = findViewById(R.id.visualizerLine);
 
         EditText sFreq = findViewById(R.id.startFrequency);
         EditText eFreq = findViewById(R.id.endFrequency);
 
-        TextView pitchValue = findViewById(R.id.pitchValue);
-        pitchValue.setText("pitch: 1.00f");
+        TextView pitchValueTextView = findViewById(R.id.pitchValue);
+        pitchValueTextView.setText("pitch: 1.00f");
         DecimalFormat df = new DecimalFormat();
         df.setMaximumFractionDigits(2);
+
+        myDatabase = new DatabaseHelper(this);
 
 
         bGenerate.setOnClickListener(view -> {
@@ -74,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
             float pitch = params.getPitch();
             pitch = pitch + 0.05f;
             params.setPitch(pitch);
-            pitchValue.setText("pitch: " + df.format(pitch));
+            pitchValueTextView.setText("pitch: " + df.format(pitch));
             audioTrack.setPlaybackParams(params);
         });
 
@@ -84,10 +93,16 @@ public class MainActivity extends AppCompatActivity {
             if(pitch > 0.10f) {
                 pitch = pitch - 0.05f;
             }
-            pitchValue.setText("pitch: " + df.format(pitch));
+            pitchValueTextView.setText("pitch: " + df.format(pitch));
             params.setPitch(pitch);
             audioTrack.setPlaybackParams(params);
         });
+
+        savePitchButton.setOnClickListener(view -> {
+            String pitchValue = pitchValueTextView.getText().toString();
+            myDatabase.addData(pitchValue);
+        });
+
     }
 
     protected void onResume()
@@ -144,5 +159,13 @@ public class MainActivity extends AppCompatActivity {
 
         // Setting the media player to the visualizer.
         lineVisualizer.setPlayer(audioTrack.getAudioSessionId());
+    }
+
+    /**
+     * customizable toast
+     * @param message
+     */
+    private void toastMessage(String message){
+        Toast.makeText(this,message, Toast.LENGTH_SHORT).show();
     }
 }
