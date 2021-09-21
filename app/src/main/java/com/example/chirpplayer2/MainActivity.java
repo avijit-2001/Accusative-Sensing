@@ -19,22 +19,41 @@ import android.widget.EditText;
 import android.widget.TextView;
 
 import com.chibde.visualizer.LineVisualizer;
+import com.jlibrosa.audio.JLibrosa;
+import com.jlibrosa.audio.exception.FileFormatNotSupportedException;
+import com.jlibrosa.audio.wavFile.WavFileException;
 
+import org.apache.commons.math3.complex.Complex;
+
+import java.io.BufferedOutputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
 
     int duration=10;
+    long subChunk1Size = 16;
+    int bitsPerSample= 16;
+    int format = 1;
+    long channels = 1;
     int sampleRate=44100;
     int numSample=duration*sampleRate;
     double sample[]=new double[numSample];
     double freq1=20;
     double freq2=1900;
     byte[] generatedSnd= new byte[2*numSample];
+    long byteRate = sampleRate * channels * bitsPerSample/8;
+    int blockAlign = (int) (channels * bitsPerSample/8);
+
     Handler handler = new Handler();
     AudioTrack audioTrack;
     LineVisualizer lineVisualizer;
+    String filename = "audio.wav";
 
     @Override
     @TargetApi(Build.VERSION_CODES.M)
@@ -61,11 +80,13 @@ public class MainActivity extends AppCompatActivity {
             String start = sFreq.getText().toString();
             String end = eFreq.getText().toString();
 
-            freq1 = Double.valueOf(start);
-            freq2 = Double.valueOf(end);
+            freq1 = Double.parseDouble(start);
+            freq2 = Double.parseDouble(end);
 
             genTone();
             playSound();
+            writeWAV();
+            getFeatures();
 
         });
 
@@ -100,19 +121,23 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         if (lineVisualizer != null)
             lineVisualizer.release();
+        if (audioTrack != null)
+            audioTrack.release();
     }
 
     void genTone(){
 
-        double instfreq = 0, numerator;
+        double instfreq = 0, numerator, c;
         for (int i = 0; i < numSample; i++) {
             numerator = (double) (i) / (double) numSample;
             instfreq = freq1 + (numerator * (freq2 - freq1));
+            c = (freq2 - freq1) / (double) duration;
+
             if ((i % 1000) == 0) {
                 Log.e("Current Freq:", String.format("Freq is:  %f at loop %d of %d", instfreq, i, numSample));
             }
-            sample[i] = Math.sin(2 * Math.PI * i / (sampleRate / instfreq));
-
+            //sample[i] = Math.sin(2 * Math.PI * i / (sampleRate / instfreq));
+            sample[i] = Math.sin(2 * Math.PI * ((c * i * i ) / (2 * sampleRate * sampleRate) + freq1 * i / sampleRate));
         }
         int idx = 0;
         for (final double dVal : sample) {
@@ -144,5 +169,143 @@ public class MainActivity extends AppCompatActivity {
 
         // Setting the media player to the visualizer.
         lineVisualizer.setPlayer(audioTrack.getAudioSessionId());
+    }
+
+    void writeWAV(){
+        long dataSize = generatedSnd.length/2;
+        long chunk2Size =  dataSize * channels * bitsPerSample/8;
+        long chunkSize = 36 + chunk2Size;
+
+        try {
+
+            OutputStream os;
+            os = new FileOutputStream(new File(this.getFilesDir(), filename));
+            BufferedOutputStream bos = new BufferedOutputStream(os);
+            DataOutputStream outFile = new DataOutputStream(bos);
+
+            outFile.writeBytes("RIFF");                                 // 00 - RIFF
+            outFile.write(intToByteArray((int) chunkSize), 0, 4);      // 04 - how big is the rest of this file?
+            outFile.writeBytes("WAVE");                                 // 08 - WAVE
+            outFile.writeBytes("fmt ");                                 // 12 - fmt
+            outFile.write(intToByteArray((int) subChunk1Size), 0, 4);  // 16 - size of this chunk
+            outFile.write(shortToByteArray((short) format), 0, 2);     // 20 - what is the audio format? 1 for PCM = Pulse Code Modulation
+            outFile.write(shortToByteArray((short) channels), 0, 2);   // 22 - mono or stereo? 1 or 2?  (or 5 or ???)
+            outFile.write(intToByteArray(sampleRate), 0, 4);     // 24 - samples per second (numbers per second)
+            outFile.write(intToByteArray((int) byteRate), 0, 4);       // 28 - bytes per second
+            outFile.write(shortToByteArray((short) blockAlign), 0, 2); // 32 - # of bytes in one sample, for all channels
+            outFile.write(shortToByteArray((short) bitsPerSample), 0, 2);  // 34 - how many bits in a sample(number)?  usually 16 or 24
+            outFile.writeBytes("data");                                 // 36 - data
+            outFile.write(intToByteArray((int) dataSize), 0, 4);       // 40 - how big is this data chunk
+            outFile.write(generatedSnd);                                    // 44 - the actual data itself - just a long string of numbers
+
+            outFile.flush();
+            outFile.close();
+        }
+        catch (IOException e){
+            Log.e("Exception", "File write failed: " + e.toString());
+        }
+    }
+    private static byte[] intToByteArray(int i)
+    {
+        byte[] b = new byte[4];
+        b[0] = (byte) (i & 0x00FF);
+        b[1] = (byte) ((i >> 8) & 0x000000FF);
+        b[2] = (byte) ((i >> 16) & 0x000000FF);
+        b[3] = (byte) ((i >> 24) & 0x000000FF);
+        return b;
+    }
+
+    public static byte[] shortToByteArray(short data)
+    {
+        return new byte[]{(byte)(data & 0xff),(byte)((data >>> 8) & 0xff)};
+    }
+
+    void getFeatures(){
+        int defaultSampleRate = -1;		//-1 value implies the method to use default sample rate
+        int defaultAudioDuration = -1;	//-1 value implies the method to process complete audio duration
+
+        JLibrosa jLibrosa = new JLibrosa();
+
+        /* To read the magnitude values of audio files - equivalent to librosa.load('../audioFiles/1995-1826-0003.wav', sr=None) function */
+
+        try {
+
+            File file = new File(this.getFilesDir(),filename);
+            Log.e("path", String.format("%s",file.getAbsolutePath()));
+            float audioFeatureValues[] = jLibrosa.loadAndRead(file.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
+
+            ArrayList<Float> audioFeatureValuesList = jLibrosa.loadAndReadAsList(file.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
+
+
+            for (int i = 0; i < 10; i++) {
+                Log.e("AudioFeature", String.format("%f", audioFeatureValues[i]));
+            }
+
+
+            /* To read the no of frames present in audio file*/
+            int nNoOfFrames = jLibrosa.getNoOfFrames();
+
+
+            /* To read sample rate of audio file */
+            int sampleRate = jLibrosa.getSampleRate();
+
+            /* To read number of channels in audio file */
+            int noOfChannels = jLibrosa.getNoOfChannels();
+
+            Complex[][] stftComplexValues = jLibrosa.generateSTFTFeatures(audioFeatureValues, sampleRate, 40);
+
+
+            float[] invSTFTValues = jLibrosa.generateInvSTFTFeatures(stftComplexValues, sampleRate, 40);
+            Log.e("invSTFT value", String.format("%f", invSTFTValues[0]));
+
+            float[][] melSpectrogram = jLibrosa.generateMelSpectroGram(audioFeatureValues, sampleRate, 2048, 128, 256);
+            Log.e("melSpectrogram value", String.format("%f", melSpectrogram[0][0]));
+
+            /* To read the MFCC values of an audio file
+             *equivalent to librosa.feature.mfcc(x, sr, n_mfcc=40) in python
+             * */
+
+            float[][] mfccValues = jLibrosa.generateMFCCFeatures(audioFeatureValues, sampleRate, 40);
+
+            float[] meanMFCCValues = jLibrosa.generateMeanMFCCFeatures(mfccValues, mfccValues.length, mfccValues[0].length);
+            Log.e("meanMFCC value", String.format("%f", meanMFCCValues[0]));
+            //System.out.println(".......");
+            //System.out.println("Size of MFCC Feature Values: (" + mfccValues.length + " , " + mfccValues[0].length + " )");
+
+           /* for (int i = 0; i < 1; i++) {
+                for (int j = 0; j < 10; j++) {
+                    System.out.printf("%.6f%n", mfccValues[i][j]);
+                }
+            }*/
+
+
+
+            /* To read the STFT values of an audio file
+             *equivalent to librosa.core.stft(x, sr, n_mfcc=40) in python
+             *Note STFT values return would be complex in nature with real and imaginary values.
+             * */
+
+            Complex[][] stftComplexValues1 = jLibrosa.generateSTFTFeatures(audioFeatureValues, sampleRate, 40);
+
+
+            float[] invSTFTValues1 = jLibrosa.generateInvSTFTFeatures(stftComplexValues, sampleRate, 40);
+
+           /* System.out.println(".......");
+            System.out.println("Size of STFT Feature Values: (" + stftComplexValues.length + " , " + stftComplexValues[0].length + " )");
+
+
+            for (int i = 0; i < 1; i++) {
+                for (int j = 0; j < 10; j++) {
+                    double realValue = stftComplexValues[i][j].getReal();
+                    double imagValue = stftComplexValues[i][j].getImaginary();
+                    System.out.println("Real and Imag values of STFT are " + realValue + "," + imagValue);
+                }
+
+            }*/
+        }
+        catch (IOException | WavFileException | FileFormatNotSupportedException e){
+            Log.e("Exception", "File write failed: " + e.toString());
+        }
+
     }
 }
