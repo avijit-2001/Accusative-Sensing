@@ -40,11 +40,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         Log.d(TAG, "addData: Adding " + name + " to " + TABLE_NAME);
 
         long result = sqLiteDatabase.insert(TABLE_NAME, null, contentValues);
-        if(result == -1) {
-            return false;
-        } else {
-            return true;
-        }
+        return result != -1;
     }
 
     public Cursor getData(){
