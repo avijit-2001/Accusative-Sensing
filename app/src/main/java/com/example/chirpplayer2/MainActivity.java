@@ -36,7 +36,7 @@ import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
 
-    int duration=10;
+    int duration=5;
     long subChunk1Size = 16;
     int bitsPerSample= 16;
     int format = 1;
@@ -85,8 +85,8 @@ public class MainActivity extends AppCompatActivity {
 
             genTone();
             playSound();
-            writeWAV();
-            getFeatures();
+            //writeWAV();
+            //getFeatures();
 
         });
 
@@ -127,17 +127,11 @@ public class MainActivity extends AppCompatActivity {
 
     void genTone(){
 
-        double instfreq = 0, numerator, c;
+        double c;
         for (int i = 0; i < numSample; i++) {
-            numerator = (double) (i) / (double) numSample;
-            instfreq = freq1 + (numerator * (freq2 - freq1));
             c = (freq2 - freq1) / (double) duration;
 
-            if ((i % 1000) == 0) {
-                Log.e("Current Freq:", String.format("Freq is:  %f at loop %d of %d", instfreq, i, numSample));
-            }
-            //sample[i] = Math.sin(2 * Math.PI * i / (sampleRate / instfreq));
-            sample[i] = Math.sin(2 * Math.PI * ((c * i * i ) / (2 * sampleRate * sampleRate) + freq1 * i / sampleRate));
+            sample[i] = Math.sin(2 * Math.PI * (c/2 * i/sampleRate + freq1) * i/sampleRate);
         }
         int idx = 0;
         for (final double dVal : sample) {
