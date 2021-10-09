@@ -166,7 +166,7 @@ public class MainActivity extends AppCompatActivity {
 
             genTone();
             playSound();
-            //writeWAV();
+            // writeWAV();
             //getFeatures();
 
         });
