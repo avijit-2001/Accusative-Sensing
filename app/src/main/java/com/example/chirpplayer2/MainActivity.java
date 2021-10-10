@@ -7,12 +7,14 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.media.PlaybackParams;
@@ -36,6 +38,7 @@ import org.apache.commons.math3.complex.Complex;
 import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -44,87 +47,131 @@ import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
 
-    int duration=5;
+    int duration = 5;
     long subChunk1Size = 16;
-    int bitsPerSample= 16;
+    int bitsPerSample = 16;
     int format = 1;
     long channels = 1;
-    int sampleRate=44100;
-    int numSample=duration*sampleRate;
-    double[] sample =new double[numSample];
-    double freq1=20;
-    double freq2=1900;
-    byte[] generatedSnd= new byte[2*numSample];
-    long byteRate = sampleRate * channels * bitsPerSample/8;
-    int blockAlign = (int) (channels * bitsPerSample/8);
+    int sampleRate = 44100;
+    int numSample = duration * sampleRate;
+    double[] sample = new double[numSample];
+    double freq1 = 20;
+    double freq2 = 1900;
+    byte[] generatedSnd = new byte[2 * numSample];
+    long byteRate = sampleRate * channels * bitsPerSample / 8;
+    int blockAlign = (int) (channels * bitsPerSample / 8);
 
-    Handler handler = new Handler();
     AudioTrack audioTrack;
     LineVisualizer lineVisualizer;
     String filename = "audio.wav";
 
 
+    // Recording Functionality Variables
+
     private static final String LOG_TAG = "AudioRecordTest";
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
-    private static String fileName = null;
-
-    private MediaRecorder recorder = null;
+    private static final int WRITE_EXTERNAL_STORAGE_PERMISSION = 200;
+    private static String saveFileName = null;
     private Button recordButton = null;
-    private Boolean recordingStatus = false;
-
-    // Requesting permission to RECORD_AUDIO
-    private boolean permissionToRecordAccepted = false;
-    private String [] permissions = {Manifest.permission.RECORD_AUDIO};
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        switch (requestCode){
-            case REQUEST_RECORD_AUDIO_PERMISSION:
-                permissionToRecordAccepted  = grantResults[0] == PackageManager.PERMISSION_GRANTED;
-                break;
-        }
-        if (!permissionToRecordAccepted ) finish();
-
-    }
-
-    private void onRecord(boolean start) {
-
-        if (start) {
-            recordButton.setText("Stop & Save");
-            startRecording();
-        } else {
-            recordButton.setText("Start Recording");
-            stopRecording();
-        }
-    }
 
 
-    private void startRecording() {
-        recorder = new MediaRecorder();
-        recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        recorder.setOutputFormat(MediaRecorder.OutputFormat.DEFAULT);
-        toastMessage(fileName);
-        recorder.setOutputFile(fileName);
-        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
+    // Recording
 
-        try {
-            recorder.prepare();
-        } catch (IOException e) {
-            Log.e(LOG_TAG, "prepare() failed");
-        }
+    private static final int RECORDER_SAMPLERATE = 8000;
+    private static final int RECORDER_CHANNELS = AudioFormat.CHANNEL_IN_MONO;
+    private static final int RECORDER_AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
+    private AudioRecord recorder = null;
+    private Thread recordingThread = null;
+    private Boolean isRecording = false;
+    private int bufferSize;
 
-        recorder.start();
-    }
 
-    private void stopRecording() {
-        recorder.stop();
-        recorder.release();
-        recorder = null;
-    }
+
+
+    // PERMISSIONS
+    private String [] permissions = {Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.MANAGE_EXTERNAL_STORAGE,
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE};
 
     DatabaseHelper myDatabase;
 
+    int BufferElements2Rec = 1024; // want to play 2048 (2K) since 2 bytes we use only 1024
+    int BytesPerElement = 2; // 2 bytes in 16bit format
+
+    private void startRecording() {
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        recorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
+                RECORDER_SAMPLERATE, RECORDER_CHANNELS,
+                RECORDER_AUDIO_ENCODING, BufferElements2Rec * BytesPerElement);
+
+        recorder.startRecording();
+        isRecording = true;
+        recordingThread = new Thread(new Runnable() {
+            public void run() {
+                writeAudioDataToFile();
+            }
+        }, "AudioRecorder Thread");
+        recordingThread.start();
+    }
+
+    private byte[] short2byte(short[] sData) {
+        int shortArrSize = sData.length;
+        byte[] bytes = new byte[shortArrSize * 2];
+        for (int i = 0; i < shortArrSize; i++) {
+            bytes[i * 2] = (byte) (sData[i] & 0x00FF);
+            bytes[(i * 2) + 1] = (byte) (sData[i] >> 8);
+            sData[i] = 0;
+        }
+        return bytes;
+
+    }
+
+    private void writeAudioDataToFile() {
+        // Write the output audio in byte
+        File file = new File(this.getFilesDir(), filename);
+        String filePath = file.getAbsolutePath();
+        Log.e("path",filePath);
+        short sData[] = new short[BufferElements2Rec];
+        FileOutputStream os;
+        os = null;
+        try {
+            os = new FileOutputStream(filePath);
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        }
+
+        while (isRecording) {
+            // gets the voice output from microphone to byte format
+            recorder.read(sData, 0, BufferElements2Rec);
+            try {
+                byte bData[] = short2byte(sData);
+                os.write(bData, 0, BufferElements2Rec * BytesPerElement);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        try {
+            os.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void stopRecording() {
+        // stops the recording activity
+        if (null != recorder) {
+            isRecording = false;
+            recorder.stop();
+            recorder.release();
+            recorder = null;
+            recordingThread = null;
+        }
+    }
+    @SuppressLint("SetTextI18n")
     @Override
     @TargetApi(Build.VERSION_CODES.M)
     protected void onCreate(Bundle savedInstanceState) {
@@ -133,11 +180,16 @@ public class MainActivity extends AppCompatActivity {
 
 
         // Record to the external cache directory for visibility
-        fileName = getExternalCacheDir().getAbsolutePath();
-        fileName += "/current_audio.3gp";
+        saveFileName = getExternalCacheDir().getAbsolutePath();
+        saveFileName += "/current_audio.pcm";
 
 
-        ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
+        ActivityCompat.requestPermissions(this,
+                permissions,
+                REQUEST_RECORD_AUDIO_PERMISSION);
+        ActivityCompat.requestPermissions(this,
+                permissions,
+                WRITE_EXTERNAL_STORAGE_PERMISSION);
 
         Button bGenerate = findViewById(R.id.generate);
         Button pitchIncreaseButton = findViewById(R.id.increase);
@@ -197,10 +249,16 @@ public class MainActivity extends AppCompatActivity {
         });
 
         recordButton.setOnClickListener(view -> {
-
-            recordingStatus = !recordingStatus;
-            onRecord(recordingStatus);
-            toastMessage(fileName);
+            System.out.println(isRecording);
+            if(!isRecording) {
+                startRecording();
+                recordButton.setText("STOP");
+                isRecording = true;
+            } else {
+                isRecording = false;
+                stopRecording();
+                recordButton.setText("RECORD");
+            }
         });
 
     }
@@ -389,8 +447,8 @@ public class MainActivity extends AppCompatActivity {
             for (int i = 0; i < 1; i++) {
                 for (int j = 0; j < 10; j++) {
                     double realValue = stftComplexValues[i][j].getReal();
-                    double imagValue = stftComplexValues[i][j].getImaginary();
-                    System.out.println("Real and Imag values of STFT are " + realValue + "," + imagValue);
+                    double imageValue = stftComplexValues[i][j].getImaginary();
+                    System.out.println("Real and Image values of STFT are " + realValue + "," + imageValue);
                 }
 
             }*/
