@@ -36,55 +36,54 @@ import com.jlibrosa.audio.wavFile.WavFileException;
 import org.apache.commons.math3.complex.Complex;
 
 import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.text.DecimalFormat;
+import java.util.Arrays;
 import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
 
     int duration = 5;
-    long subChunk1Size = 16;
-    int bitsPerSample = 16;
-    int format = 1;
-    long channels = 1;
     int sampleRate = 44100;
     int numSample = duration * sampleRate;
     double[] sample = new double[numSample];
     double freq1 = 20;
     double freq2 = 1900;
     byte[] generatedSnd = new byte[2 * numSample];
-    long byteRate = sampleRate * channels * bitsPerSample / 8;
-    int blockAlign = (int) (channels * bitsPerSample / 8);
 
     AudioTrack audioTrack;
     LineVisualizer lineVisualizer;
-    String filename = "audio.wav";
-
+    String pcmFilename = "audio.pcm";
+    String wavFilename = "audio.wav";
 
     // Recording Functionality Variables
 
     private static final String LOG_TAG = "AudioRecordTest";
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
     private static final int WRITE_EXTERNAL_STORAGE_PERMISSION = 200;
-    private static String saveFileName = null;
     private Button recordButton = null;
 
 
     // Recording
 
-    private static final int RECORDER_SAMPLERATE = 8000;
+    private static final int RECORDER_SAMPLERATE = 44100;
     private static final int RECORDER_CHANNELS = AudioFormat.CHANNEL_IN_MONO;
     private static final int RECORDER_AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
     private AudioRecord recorder = null;
     private Thread recordingThread = null;
     private Boolean isRecording = false;
     private int bufferSize;
-
+    File pcmFile;
+    File wavFile;
 
 
 
@@ -132,8 +131,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void writeAudioDataToFile() {
         // Write the output audio in byte
-        File file = new File(this.getFilesDir(), filename);
-        String filePath = file.getAbsolutePath();
+        pcmFile = new File(this.getFilesDir(), pcmFilename);
+        String filePath = pcmFile.getAbsolutePath();
         Log.e("path",filePath);
         short sData[] = new short[BufferElements2Rec];
         FileOutputStream os;
@@ -147,6 +146,15 @@ public class MainActivity extends AppCompatActivity {
         while (isRecording) {
             // gets the voice output from microphone to byte format
             recorder.read(sData, 0, BufferElements2Rec);
+            float[] dData = new float[sData.length];
+            Filter filter = new Filter(20000,44100, Filter.PassType.Highpass,1);
+            for(int i=0; i< sData.length; i++){
+                dData[i] = sData[i] / (float)32768 ;
+                filter.Update(dData[i]);
+                dData[i] = filter.getValue();
+                sData[i] = (short) (dData[i] * 32767);
+            }
+
             try {
                 byte bData[] = short2byte(sData);
                 os.write(bData, 0, BufferElements2Rec * BytesPerElement);
@@ -169,6 +177,13 @@ public class MainActivity extends AppCompatActivity {
             recorder.release();
             recorder = null;
             recordingThread = null;
+            wavFile = new File(this.getFilesDir(), wavFilename);
+            try {
+                rawToWave(pcmFile, wavFile);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            getFeatures();
         }
     }
     @SuppressLint("SetTextI18n")
@@ -177,11 +192,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
-
-        // Record to the external cache directory for visibility
-        saveFileName = getExternalCacheDir().getAbsolutePath();
-        saveFileName += "/current_audio.pcm";
 
 
         ActivityCompat.requestPermissions(this,
@@ -218,9 +228,6 @@ public class MainActivity extends AppCompatActivity {
 
             genTone();
             playSound();
-            // writeWAV();
-            //getFeatures();
-
         });
 
         pitchIncreaseButton.setOnClickListener(view -> {
@@ -241,11 +248,6 @@ public class MainActivity extends AppCompatActivity {
             pitchValueTextView.setText("pitch: " + df.format(pitch));
             params.setPitch(pitch);
             audioTrack.setPlaybackParams(params);
-        });
-
-        savePitchButton.setOnClickListener(view -> {
-            String pitchValue = pitchValueTextView.getText().toString();
-            myDatabase.addData(pitchValue);
         });
 
         recordButton.setOnClickListener(view -> {
@@ -317,57 +319,92 @@ public class MainActivity extends AppCompatActivity {
         lineVisualizer.setPlayer(audioTrack.getAudioSessionId());
     }
 
-    private void toastMessage(String message) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    private void rawToWave(final File rawFile, final File waveFile) throws IOException {
+
+        byte[] rawData = new byte[(int) rawFile.length()];
+        DataInputStream input = null;
+        try {
+            input = new DataInputStream(new FileInputStream(rawFile));
+            input.read(rawData);
+        } finally {
+            if (input != null) {
+                input.close();
+            }
+        }
+
+        DataOutputStream output = null;
+        try {
+            output = new DataOutputStream(new FileOutputStream(waveFile));
+            // WAVE header
+            // see http://ccrma.stanford.edu/courses/422/projects/WaveFormat/
+            writeString(output, "RIFF"); // chunk id
+            writeInt(output, 36 + rawData.length); // chunk size
+            writeString(output, "WAVE"); // format
+            writeString(output, "fmt "); // subchunk 1 id
+            writeInt(output, 16); // subchunk 1 size
+            writeShort(output, (short) 1); // audio format (1 = PCM)
+            writeShort(output, (short) 1); // number of channels
+            writeInt(output, 44100); // sample rate
+            writeInt(output, RECORDER_SAMPLERATE * 2); // byte rate
+            writeShort(output, (short) 2); // block align
+            writeShort(output, (short) 16); // bits per sample
+            writeString(output, "data"); // subchunk 2 id
+            writeInt(output, rawData.length); // subchunk 2 size
+            // Audio data (conversion big endian -> little endian)
+            short[] shorts = new short[rawData.length / 2];
+            ByteBuffer.wrap(rawData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts);
+            ByteBuffer bytes = ByteBuffer.allocate(shorts.length * 2);
+            for (short s : shorts) {
+                bytes.putShort(s);
+            }
+
+            output.write(fullyReadFileToBytes(rawFile));
+        } finally {
+            if (output != null) {
+                output.close();
+            }
+        }
     }
-
-    void writeWAV(){
-        long dataSize = generatedSnd.length/2;
-        long chunk2Size =  dataSize * channels * bitsPerSample/8;
-        long chunkSize = 36 + chunk2Size;
-
+    byte[] fullyReadFileToBytes(File f) throws IOException {
+        int size = (int) f.length();
+        byte bytes[] = new byte[size];
+        byte tmpBuff[] = new byte[size];
+        FileInputStream fis= new FileInputStream(f);
         try {
 
-            OutputStream os;
-            os = new FileOutputStream(new File(this.getFilesDir(), filename));
-            BufferedOutputStream bos = new BufferedOutputStream(os);
-            DataOutputStream outFile = new DataOutputStream(bos);
-
-            outFile.writeBytes("RIFF");                                 // 00 - RIFF
-            outFile.write(intToByteArray((int) chunkSize), 0, 4);      // 04 - how big is the rest of this file?
-            outFile.writeBytes("WAVE");                                 // 08 - WAVE
-            outFile.writeBytes("fmt ");                                 // 12 - fmt
-            outFile.write(intToByteArray((int) subChunk1Size), 0, 4);  // 16 - size of this chunk
-            outFile.write(shortToByteArray((short) format), 0, 2);     // 20 - what is the audio format? 1 for PCM = Pulse Code Modulation
-            outFile.write(shortToByteArray((short) channels), 0, 2);   // 22 - mono or stereo? 1 or 2?  (or 5 or ???)
-            outFile.write(intToByteArray(sampleRate), 0, 4);     // 24 - samples per second (numbers per second)
-            outFile.write(intToByteArray((int) byteRate), 0, 4);       // 28 - bytes per second
-            outFile.write(shortToByteArray((short) blockAlign), 0, 2); // 32 - # of bytes in one sample, for all channels
-            outFile.write(shortToByteArray((short) bitsPerSample), 0, 2);  // 34 - how many bits in a sample(number)?  usually 16 or 24
-            outFile.writeBytes("data");                                 // 36 - data
-            outFile.write(intToByteArray((int) dataSize), 0, 4);       // 40 - how big is this data chunk
-            outFile.write(generatedSnd);                                    // 44 - the actual data itself - just a long string of numbers
-
-            outFile.flush();
-            outFile.close();
+            int read = fis.read(bytes, 0, size);
+            if (read < size) {
+                int remain = size - read;
+                while (remain > 0) {
+                    read = fis.read(tmpBuff, 0, remain);
+                    System.arraycopy(tmpBuff, 0, bytes, size - remain, read);
+                    remain -= read;
+                }
+            }
+        }  catch (IOException e){
+            throw e;
+        } finally {
+            fis.close();
         }
-        catch (IOException e){
-            Log.e("Exception", "File write failed: " + e.toString());
-        }
+
+        return bytes;
     }
-    private static byte[] intToByteArray(int i)
-    {
-        byte[] b = new byte[4];
-        b[0] = (byte) (i & 0x00FF);
-        b[1] = (byte) ((i >> 8) & 0x000000FF);
-        b[2] = (byte) ((i >> 16) & 0x000000FF);
-        b[3] = (byte) ((i >> 24) & 0x000000FF);
-        return b;
+    private void writeInt(final DataOutputStream output, final int value) throws IOException {
+        output.write(value >> 0);
+        output.write(value >> 8);
+        output.write(value >> 16);
+        output.write(value >> 24);
     }
 
-    public static byte[] shortToByteArray(short data)
-    {
-        return new byte[]{(byte)(data & 0xff),(byte)((data >>> 8) & 0xff)};
+    private void writeShort(final DataOutputStream output, final short value) throws IOException {
+        output.write(value >> 0);
+        output.write(value >> 8);
+    }
+
+    private void writeString(final DataOutputStream output, final String value) throws IOException {
+        for (int i = 0; i < value.length(); i++) {
+            output.write(value.charAt(i));
+        }
     }
 
     void getFeatures(){
@@ -380,11 +417,9 @@ public class MainActivity extends AppCompatActivity {
 
         try {
 
-            File file = new File(this.getFilesDir(),filename);
-            Log.e("path", String.format("%s",file.getAbsolutePath()));
-            float audioFeatureValues[] = jLibrosa.loadAndRead(file.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
+            float audioFeatureValues[] = jLibrosa.loadAndRead(wavFile.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
 
-            ArrayList<Float> audioFeatureValuesList = jLibrosa.loadAndReadAsList(file.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
+            ArrayList<Float> audioFeatureValuesList = jLibrosa.loadAndReadAsList(wavFile.getAbsolutePath(), defaultSampleRate, defaultAudioDuration);
 
 
             for (int i = 0; i < 10; i++) {
@@ -393,22 +428,26 @@ public class MainActivity extends AppCompatActivity {
 
 
             /* To read the no of frames present in audio file*/
-            int nNoOfFrames = jLibrosa.getNoOfFrames();
-
+            int noOfFrames = jLibrosa.getNoOfFrames();
+            String sNoOfFrames = Integer.toString(noOfFrames);
 
             /* To read sample rate of audio file */
             int sampleRate = jLibrosa.getSampleRate();
+            String sSampleRate = Integer.toString(sampleRate);
 
             /* To read number of channels in audio file */
             int noOfChannels = jLibrosa.getNoOfChannels();
+            String sNoOfChannels = Integer.toString(noOfChannels);
 
             Complex[][] stftComplexValues = jLibrosa.generateSTFTFeatures(audioFeatureValues, sampleRate, 40);
-
+            String sStftComplexValues = Arrays.deepToString(stftComplexValues);
 
             float[] invSTFTValues = jLibrosa.generateInvSTFTFeatures(stftComplexValues, sampleRate, 40);
+            String sInvSTFTValues = Arrays.toString(invSTFTValues);
             Log.e("invSTFT value", String.format("%f", invSTFTValues[0]));
 
             float[][] melSpectrogram = jLibrosa.generateMelSpectroGram(audioFeatureValues, sampleRate, 2048, 128, 256);
+            String sMelSpectrogram = Arrays.deepToString(melSpectrogram);
             Log.e("melSpectrogram value", String.format("%f", melSpectrogram[0][0]));
 
             /* To read the MFCC values of an audio file
@@ -416,8 +455,10 @@ public class MainActivity extends AppCompatActivity {
              * */
 
             float[][] mfccValues = jLibrosa.generateMFCCFeatures(audioFeatureValues, sampleRate, 40);
+            String sMfccValues = Arrays.deepToString(mfccValues);
 
             float[] meanMFCCValues = jLibrosa.generateMeanMFCCFeatures(mfccValues, mfccValues.length, mfccValues[0].length);
+            String sMeanMFCCValues = Arrays.toString(meanMFCCValues);
             Log.e("meanMFCC value", String.format("%f", meanMFCCValues[0]));
             //System.out.println(".......");
             //System.out.println("Size of MFCC Feature Values: (" + mfccValues.length + " , " + mfccValues[0].length + " )");
@@ -428,18 +469,17 @@ public class MainActivity extends AppCompatActivity {
                 }
             }*/
 
-
+            myDatabase.addData(sNoOfFrames, sSampleRate, sNoOfChannels, sStftComplexValues, sInvSTFTValues, sMelSpectrogram, sMfccValues, sMeanMFCCValues);
 
             /* To read the STFT values of an audio file
              *equivalent to librosa.core.stft(x, sr, n_mfcc=40) in python
              *Note STFT values return would be complex in nature with real and imaginary values.
              * */
 
-            Complex[][] stftComplexValues1 = jLibrosa.generateSTFTFeatures(audioFeatureValues, sampleRate, 40);
+            //Complex[][] stftComplexValues1 = jLibrosa.generateSTFTFeatures(audioFeatureValues, sampleRate, 40);
 
 
-            float[] invSTFTValues1 = jLibrosa.generateInvSTFTFeatures(stftComplexValues, sampleRate, 40);
-
+            //float[] invSTFTValues1 = jLibrosa.generateInvSTFTFeatures(stftComplexValues, sampleRate, 40);
            /* System.out.println(".......");
             System.out.println("Size of STFT Feature Values: (" + stftComplexValues.length + " , " + stftComplexValues[0].length + " )");
 
